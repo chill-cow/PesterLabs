@@ -81,7 +81,7 @@ try
     else
     {
         Write-Host '  Installing latest Pester module...' -ForegroundColor Yellow
-        Install-Module -Name Pester -Force -SkipPublisherCheck -Scope CurrentUser
+        Install-Module -Name Pester -Force -SkipPublisherCheck
         Write-Host '  ✅ Pester module installed successfully' -ForegroundColor Green
     }
 }
