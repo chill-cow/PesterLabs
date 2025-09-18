@@ -1,0 +1,10 @@
+{
+    "powershell.pester.useLegacyCodeLens": false,
+    "powershell.pester.outputVerbosity": "Detailed",
+    "testExplorer.useNativeTesting": true,
+    "powershell.integratedConsole.showOnStartup": false,
+    "files.associations": {
+        "*.Tests.ps1": "powershell"
+    },
+    "test.defaultGutterClickAction": "run"
+}

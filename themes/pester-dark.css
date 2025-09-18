@@ -1,0 +1,83 @@
+/* Custom Marp theme: pester-dark */
+@import 'default';
+
+section {
+    background: #121417;
+    color: #e4e8ed;
+    font-family: "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.35;
+}
+
+h1,
+h2,
+h3,
+h4 {
+    color: #66d9ef;
+    font-weight: 600;
+}
+
+code,
+pre code {
+    font-family: "Cascadia Code", Consolas, "Fira Code", monospace;
+}
+
+pre code {
+    background: #1e2429;
+    color: #d7dee5;
+    border: 1px solid #2b343c;
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+}
+
+/* PowerShell-esque accents */
+strong {
+    color: #ffd479;
+}
+
+a {
+    color: #82cfff;
+}
+
+table {
+    border-collapse: collapse;
+}
+
+table th {
+    background: #1e2429;
+}
+
+table th,
+table td {
+    border: 1px solid #2b343c;
+    padding: 4px 8px;
+}
+
+/* Slide footer pagination */
+section footer {
+    color: #4e5a64;
+    font-size: 0.7rem;
+}
+
+/* Emphasis blocks */
+blockquote {
+    border-left: 4px solid #3a86ff;
+    padding-left: 0.85rem;
+    color: #b7c3cc;
+}
+
+/* Lists tighter */
+ul {
+    margin-block-start: 0.4rem;
+}
+
+/* Table zebra */
+table tr:nth-child(even) td {
+    background: #161c21;
+}
+
+/* Inline code */
+code {
+    background: #1e2429;
+    padding: 2px 4px;
+    border-radius: 4px;
+}

@@ -1,0 +1,314 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  POWERSHELL_TELEMETRY_OPTOUT: 1
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install PowerShell (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            # Install PowerShell on Ubuntu
+            wget -q "https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb"
+            sudo dpkg -i packages-microsoft-prod.deb
+            sudo apt-get update
+            sudo apt-get install -y powershell
+          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+            # Install PowerShell on macOS
+            brew install --cask powershell
+          fi
+
+      - name: Verify PowerShell Installation
+        shell: pwsh
+        run: |
+          Write-Host "PowerShell Version: $($PSVersionTable.PSVersion)"
+          Write-Host "Platform: $($PSVersionTable.Platform)"
+          Write-Host "OS: $($PSVersionTable.OS)"
+
+      - name: Install Pester and Dependencies
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+
+          # Install required modules
+          $modules = @(
+            @{ Name = 'Pester'; MinimumVersion = '5.7.1' }
+            @{ Name = 'PSScriptAnalyzer'; MinimumVersion = '1.21.0' }
+          )
+
+          foreach ($module in $modules) {
+            try {
+              Install-Module @module -Force -Scope CurrentUser -AllowClobber
+              Import-Module $module.Name -Force
+              $installedVersion = Get-Module $module.Name | Select-Object -ExpandProperty Version
+              Write-Host "✅ Installed $($module.Name) v$installedVersion"
+            }
+            catch {
+              Write-Error "❌ Failed to install $($module.Name): $_"
+              exit 1
+            }
+          }
+
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Write-Host "🔍 Running PSScriptAnalyzer..." -ForegroundColor Cyan
+
+          $analysisResults = @()
+          $sourceFiles = Get-ChildItem -Path .\src -Filter *.ps1 -Recurse -ErrorAction SilentlyContinue
+
+          if (-not $sourceFiles) {
+            Write-Warning "No PowerShell files found in .\src directory"
+            return
+          }
+
+          foreach ($file in $sourceFiles) {
+            Write-Host "Analyzing: $($file.FullName)"
+            $results = Invoke-ScriptAnalyzer -Path $file.FullName -Severity @('Error', 'Warning') -Recurse
+            if ($results) {
+              $analysisResults += $results
+              Write-Warning "Issues found in $($file.Name):"
+              $results | ForEach-Object {
+                $level = if ($_.Severity -eq 'Error') { 'error' } else { 'warning' }
+                Write-Host "::$level file=$($_.ScriptPath),line=$($_.Line),col=$($_.Column)::$($_.Message)"
+                Write-Warning "  Line $($_.Line): $($_.Message)"
+              }
+            }
+          }
+
+          if ($analysisResults.Count -gt 0) {
+            $errorCount = ($analysisResults | Where-Object Severity -eq 'Error').Count
+            $warningCount = ($analysisResults | Where-Object Severity -eq 'Warning').Count
+            
+            Write-Host "PSScriptAnalyzer found $($analysisResults.Count) issues: $errorCount errors, $warningCount warnings"
+            
+            if ($errorCount -gt 0) {
+              Write-Host "❌ PSScriptAnalyzer found $errorCount errors" -ForegroundColor Red
+              exit 1
+            } else {
+              Write-Host "⚠️ PSScriptAnalyzer found $warningCount warnings" -ForegroundColor Yellow
+            }
+          } else {
+            Write-Host "✅ PSScriptAnalyzer passed - no issues found" -ForegroundColor Green
+          }
+
+      - name: Test Module Import
+        shell: pwsh
+        run: |
+          Write-Host "📦 Testing module import..." -ForegroundColor Cyan
+
+          if (-not (Test-Path ".\PowerShellModule.psd1")) {
+            Write-Warning "Module manifest not found, skipping import test"
+            return
+          }
+
+          try {
+            # Test module manifest
+            $manifest = Test-ModuleManifest -Path ".\PowerShellModule.psd1" -ErrorAction Stop
+            Write-Host "✅ Module manifest is valid: $($manifest.Name) v$($manifest.Version)"
+            
+            # Import module
+            Import-Module ".\PowerShellModule.psd1" -Force -ErrorAction Stop
+            $functions = Get-Command -Module PowerShellModule
+            Write-Host "✅ Module imported successfully"
+            Write-Host "Exported functions: $($functions.Name -join ', ')"
+            
+            # Test basic function availability
+            foreach ($func in $functions) {
+              $help = Get-Help $func.Name -ErrorAction SilentlyContinue
+              if (-not $help.Synopsis) {
+                Write-Warning "Function $($func.Name) may be missing help content"
+              }
+            }
+          }
+          catch {
+            Write-Host "❌ Module import failed: $_" -ForegroundColor Red
+            exit 1
+          }
+
+      - name: Run Unit Tests
+        shell: pwsh
+        run: |
+          Write-Host "🧪 Running Unit Tests..." -ForegroundColor Cyan
+
+          if (-not (Test-Path ".\tests\Unit")) {
+            Write-Warning "Unit tests directory not found, skipping unit tests"
+            return
+          }
+
+          try {
+            $pesterConfig = [PesterConfiguration]::Default
+            $pesterConfig.Run.Path = '.\tests\Unit'
+            $pesterConfig.Run.Passthru = $true
+            $pesterConfig.TestResult.Enabled = $true
+            $pesterConfig.TestResult.OutputFormat = 'NUnitXml'
+            $pesterConfig.TestResult.OutputPath = '.\TestResults-Unit-${{ matrix.os }}.xml'
+            $pesterConfig.CodeCoverage.Enabled = $true
+            $pesterConfig.CodeCoverage.Path = '.\src\**\*.ps1'
+            $pesterConfig.CodeCoverage.OutputFormat = 'JaCoCo'
+            $pesterConfig.CodeCoverage.OutputPath = '.\coverage-unit-${{ matrix.os }}.xml'
+            $pesterConfig.Output.Verbosity = 'Detailed'
+            
+            $testResults = Invoke-Pester -Configuration $pesterConfig
+            
+            Write-Host "Unit Test Results:"
+            Write-Host "  Total: $($testResults.TotalCount)"
+            Write-Host "  Passed: $($testResults.PassedCount)"
+            Write-Host "  Failed: $($testResults.FailedCount)"
+            Write-Host "  Skipped: $($testResults.SkippedCount)"
+            
+            if ($testResults.CodeCoverage) {
+              $coverage = [Math]::Round(($testResults.CodeCoverage.CoveragePercent), 2)
+              Write-Host "  Code Coverage: $coverage%"
+            }
+            
+            if ($testResults.FailedCount -gt 0) {
+              Write-Host "❌ Unit tests failed: $($testResults.FailedCount) failures" -ForegroundColor Red
+              $testResults.Failed | ForEach-Object {
+                Write-Host "  FAILED: $($_.FullName)" -ForegroundColor Red
+                Write-Host "    $($_.ErrorRecord.Exception.Message)" -ForegroundColor Red
+              }
+              exit 1
+            } else {
+              Write-Host "✅ All unit tests passed ($($testResults.PassedCount) tests)" -ForegroundColor Green
+            }
+          }
+          catch {
+            Write-Host "❌ Unit test execution failed: $_" -ForegroundColor Red
+            exit 1
+          }
+
+      - name: Run Integration Tests
+        shell: pwsh
+        run: |
+          Write-Host "🔗 Running Integration Tests..." -ForegroundColor Cyan
+
+          if (-not (Test-Path ".\tests\Integration")) {
+            Write-Warning "Integration tests directory not found, skipping integration tests"
+            return
+          }
+
+          try {
+            $pesterConfig = [PesterConfiguration]::Default
+            $pesterConfig.Run.Path = '.\tests\Integration'
+            $pesterConfig.Run.Passthru = $true
+            $pesterConfig.TestResult.Enabled = $true
+            $pesterConfig.TestResult.OutputFormat = 'NUnitXml'
+            $pesterConfig.TestResult.OutputPath = '.\TestResults-Integration-${{ matrix.os }}.xml'
+            $pesterConfig.Output.Verbosity = 'Detailed'
+            
+            # Platform-specific handling
+            if (-not $IsWindows) {
+              Write-Host "ℹ️ Running on non-Windows platform: $($PSVersionTable.Platform)" -ForegroundColor Yellow
+              # Some integration tests might be Windows-specific
+            }
+            
+            $testResults = Invoke-Pester -Configuration $pesterConfig
+            
+            Write-Host "Integration Test Results:"
+            Write-Host "  Total: $($testResults.TotalCount)"
+            Write-Host "  Passed: $($testResults.PassedCount)"
+            Write-Host "  Failed: $($testResults.FailedCount)"
+            Write-Host "  Skipped: $($testResults.SkippedCount)"
+            
+            if ($testResults.FailedCount -gt 0) {
+              Write-Host "❌ Integration tests failed: $($testResults.FailedCount) failures" -ForegroundColor Red
+              $testResults.Failed | ForEach-Object {
+                Write-Host "  FAILED: $($_.FullName)" -ForegroundColor Red
+                Write-Host "    $($_.ErrorRecord.Exception.Message)" -ForegroundColor Red
+              }
+              exit 1
+            } else {
+              Write-Host "✅ All integration tests passed ($($testResults.PassedCount) tests)" -ForegroundColor Green
+            }
+          }
+          catch {
+            Write-Host "❌ Integration test execution failed: $_" -ForegroundColor Red
+            exit 1
+          }
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}
+          path: |
+            TestResults-*.xml
+            coverage-*.xml
+          retention-days: 30
+
+      - name: Upload Coverage to Codecov
+        uses: codecov/codecov-action@v4
+        if: runner.os == 'Windows' && always() # Only upload from one platform
+        with:
+          files: ./coverage-unit-${{ matrix.os }}.xml
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  publish-test-results:
+    name: Publish Test Results
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+
+    steps:
+      - name: Download Test Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-results-*
+          merge-multiple: true
+
+      - name: Publish Test Results
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always()
+        with:
+          files: "TestResults-*.xml"
+          comment_mode: create new
+          check_name: "Test Results"
+          report_individual_runs: true
+          compare_to_earlier_commit: false
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "sarif"
+          output: "trivy-results.sarif"
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: "trivy-results.sarif"

@@ -1,0 +1,450 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 1.0.0)'
+        required: true
+        type: string
+
+env:
+  POWERSHELL_TELEMETRY_OPTOUT: 1
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  packages: write
+
+jobs:
+  validate-release:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      is-prerelease: ${{ steps.version.outputs.is-prerelease }}
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Determine Version
+      id: version
+      shell: pwsh
+      run: |
+        if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+          $version = "${{ github.event.inputs.version }}"
+          $tag = "v$version"
+        } else {
+          $tag = "${{ github.ref_name }}"
+          $version = $tag -replace '^v', ''
+        }
+        
+        Write-Host "Version: $version"
+        Write-Host "Tag: $tag"
+        
+        # Check if prerelease
+        $isPrerelease = $version -match '-(alpha|beta|rc|pre)'
+        Write-Host "Is Prerelease: $isPrerelease"
+        
+        # Validate semantic version
+        if ($version -notmatch '^\d+\.\d+\.\d+(-[\w\.-]+)?(\+[\w\.-]+)?$') {
+          throw "Invalid semantic version: $version"
+        }
+        
+        echo "version=$version" >> $env:GITHUB_OUTPUT
+        echo "tag=$tag" >> $env:GITHUB_OUTPUT
+        echo "is-prerelease=$($isPrerelease.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+        
+    - name: Validate Module Manifest
+      shell: pwsh
+      run: |
+        Write-Host "Validating module manifest..."
+        $manifest = Test-ModuleManifest -Path ".\PowerShellModule.psd1"
+        
+        $manifestVersion = $manifest.Version.ToString()
+        $releaseVersion = "${{ steps.version.outputs.version }}"
+        
+        Write-Host "Manifest Version: $manifestVersion"
+        Write-Host "Release Version: $releaseVersion"
+        
+        if ($manifestVersion -ne $releaseVersion) {
+          Write-Error "Version mismatch: Manifest=$manifestVersion, Release=$releaseVersion"
+          exit 1
+        }
+        
+        Write-Host "✅ Module manifest is valid"
+
+  build-artifacts:
+    name: Build Release Artifacts
+    runs-on: ubuntu-latest
+    needs: validate-release
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: Setup PowerShell
+      shell: pwsh
+      run: |
+        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+        Install-Module -Name Pester -Force -SkipPublisherCheck
+        Install-Module -Name PSScriptAnalyzer -Force
+        
+    - name: Run Tests
+      shell: pwsh
+      run: |
+        Write-Host "🧪 Running comprehensive tests..."
+        
+        # Import test helpers
+        if (Test-Path ".\tests\TestHelpers\TestHelpers.psm1") {
+          Import-Module ".\tests\TestHelpers\TestHelpers.psm1" -Force
+        }
+        
+        # Configure Pester
+        $pesterConfig = [PesterConfiguration]::Default
+        $pesterConfig.Run.Path = @(".\tests\Unit", ".\tests\Integration")
+        $pesterConfig.Run.Passthru = $true
+        $pesterConfig.TestResult.Enabled = $true
+        $pesterConfig.TestResult.OutputFormat = 'NUnitXml'
+        $pesterConfig.TestResult.OutputPath = ".\TestResults.xml"
+        $pesterConfig.CodeCoverage.Enabled = $true
+        $pesterConfig.CodeCoverage.Path = ".\src\**\*.ps1"
+        $pesterConfig.CodeCoverage.OutputFormat = 'JaCoCo'
+        $pesterConfig.CodeCoverage.OutputPath = ".\coverage.xml"
+        $pesterConfig.Output.Verbosity = 'Detailed'
+        
+        # Run tests
+        $testResults = Invoke-Pester -Configuration $pesterConfig
+        
+        Write-Host "Test Results:"
+        Write-Host "  Total: $($testResults.TotalCount)"
+        Write-Host "  Passed: $($testResults.PassedCount)"
+        Write-Host "  Failed: $($testResults.FailedCount)"
+        Write-Host "  Skipped: $($testResults.SkippedCount)"
+        
+        if ($testResults.FailedCount -gt 0) {
+          Write-Error "Tests failed! Cannot proceed with release."
+          exit 1
+        }
+        
+        if ($testResults.CodeCoverage) {
+          $coverage = [Math]::Round($testResults.CodeCoverage.CoveragePercent, 2)
+          Write-Host "  Code Coverage: $coverage%"
+          
+          if ($coverage -lt 80) {
+            Write-Warning "Code coverage below 80%: $coverage%"
+          }
+        }
+        
+        Write-Host "✅ All tests passed"
+        
+    - name: Run Code Analysis
+      shell: pwsh
+      run: |
+        Write-Host "🔍 Running PSScriptAnalyzer..."
+        
+        $analysisResults = @()
+        Get-ChildItem -Path ".\src" -Filter "*.ps1" -Recurse | ForEach-Object {
+          $results = Invoke-ScriptAnalyzer -Path $_.FullName -Severity @('Error', 'Warning')
+          if ($results) {
+            $analysisResults += $results
+          }
+        }
+        
+        if ($analysisResults) {
+          $errorCount = ($analysisResults | Where-Object Severity -eq 'Error').Count
+          $warningCount = ($analysisResults | Where-Object Severity -eq 'Warning').Count
+          
+          Write-Host "PSScriptAnalyzer Results:"
+          Write-Host "  Errors: $errorCount"
+          Write-Host "  Warnings: $warningCount"
+          
+          if ($errorCount -gt 0) {
+            Write-Error "PSScriptAnalyzer found $errorCount errors!"
+            $analysisResults | Where-Object Severity -eq 'Error' | ForEach-Object {
+              Write-Host "ERROR: $($_.ScriptName):$($_.Line) - $($_.Message)" -ForegroundColor Red
+            }
+            exit 1
+          }
+          
+          if ($warningCount -gt 0) {
+            Write-Warning "PSScriptAnalyzer found $warningCount warnings"
+            $analysisResults | Where-Object Severity -eq 'Warning' | ForEach-Object {
+              Write-Host "WARNING: $($_.ScriptName):$($_.Line) - $($_.Message)" -ForegroundColor Yellow
+            }
+          }
+        } else {
+          Write-Host "✅ No issues found"
+        }
+        
+    - name: Create Release Package
+      shell: pwsh
+      run: |
+        Write-Host "📦 Creating release package..."
+        
+        $version = "${{ needs.validate-release.outputs.version }}"
+        $packageName = "PowerShellModule-v$version"
+        
+        # Create release directory
+        New-Item -Path ".\release" -ItemType Directory -Force
+        
+        # Copy module files
+        $moduleFiles = @(
+          "PowerShellModule.psd1",
+          "PowerShellModule.psm1",
+          "README.md",
+          "CHANGELOG.md",
+          "LICENSE"
+        )
+        
+        $packageDir = ".\release\$packageName"
+        New-Item -Path $packageDir -ItemType Directory -Force
+        
+        foreach ($file in $moduleFiles) {
+          if (Test-Path $file) {
+            Copy-Item -Path $file -Destination $packageDir -Force
+          }
+        }
+        
+        # Copy source directory
+        if (Test-Path ".\src") {
+          Copy-Item -Path ".\src" -Destination $packageDir -Recurse -Force
+        }
+        
+        # Copy docs if available
+        if (Test-Path ".\docs") {
+          Copy-Item -Path ".\docs" -Destination $packageDir -Recurse -Force
+        }
+        
+        # Create ZIP archive
+        $zipPath = ".\release\$packageName.zip"
+        Compress-Archive -Path $packageDir -DestinationPath $zipPath -Force
+        
+        Write-Host "✅ Package created: $zipPath"
+        
+        # Create checksums
+        $hash = Get-FileHash -Path $zipPath -Algorithm SHA256
+        Set-Content -Path ".\release\$packageName.sha256" -Value "$($hash.Hash)  $packageName.zip"
+        
+        Write-Host "✅ Checksum created"
+        
+    - name: Generate Release Notes
+      shell: pwsh
+      run: |
+        Write-Host "📝 Generating release notes..."
+        
+        $version = "${{ needs.validate-release.outputs.version }}"
+        $releaseNotes = "# Release Notes for PowerShell Testing Module v$version`n`n"
+        $releaseNotes += "## What's New`n`n"
+        
+        # Extract changelog for this version if available
+        if (Test-Path ".\CHANGELOG.md") {
+          $changelog = Get-Content ".\CHANGELOG.md" -Raw
+          
+          # Try to extract section for current version
+          $versionPattern = "## \[?$version\]?.*?(?=## \[|\z)"
+          if ($changelog -match $versionPattern) {
+            $versionSection = $Matches[0]
+            $releaseNotes += "`n$versionSection"
+          } else {
+            $releaseNotes += "`n- See CHANGELOG.md for detailed changes"
+          }
+        } else {
+          $releaseNotes += "- Enhanced PowerShell testing framework`n"
+          $releaseNotes += "- Comprehensive CI/CD integration with GitHub Actions`n"
+          $releaseNotes += "- Multi-platform testing support (Windows, Linux, macOS)`n"
+          $releaseNotes += "- Advanced code quality checks and analysis`n"
+          $releaseNotes += "- Automated documentation generation`n`n"
+          
+          $releaseNotes += "## Installation`n`n"
+          $releaseNotes += "Download the module package and import it into your PowerShell session:`n`n"
+          $releaseNotes += "``````powershell`n"
+          $releaseNotes += "Import-Module .\PowerShellModule.psd1`n"
+          $releaseNotes += "```````n`n"
+          
+          $releaseNotes += "## Functions Included`n`n"
+          $releaseNotes += "- **ConvertTo-UpperCase**: Convert strings to uppercase with advanced options`n"
+          $releaseNotes += "- **Get-EmailAddress**: Validate and format email addresses`n"
+          $releaseNotes += "- **Get-DemoComputers**: Generate demo computer objects for testing`n`n"
+          
+          $releaseNotes += "## Requirements`n`n"
+          $releaseNotes += "- PowerShell 7.4 or later`n"
+          $releaseNotes += "- Pester 5.7.1 or later (for testing)`n"
+        }
+        
+        $releaseNotes += "`n`n## Testing`n`n"
+        $releaseNotes += "This release includes comprehensive test coverage:`n"
+        $releaseNotes += "- Unit tests for all functions`n"
+        $releaseNotes += "- Integration tests for cross-function workflows`n"
+        $releaseNotes += "- Performance testing and benchmarks`n"
+        $releaseNotes += "- Multi-platform compatibility testing`n`n"
+        
+        $releaseNotes += "## Documentation`n`n"
+        $releaseNotes += "Complete help documentation is included for all functions. Use ``Get-Help <FunctionName> -Full`` for detailed information.`n`n"
+        
+        $releaseNotes += "---`n`n"
+        $releaseNotes += "**Full Changelog**: [View on GitHub](https://github.com/${{ github.repository }}/releases/tag/${{ needs.validate-release.outputs.tag }})"
+        
+        Set-Content -Path ".\release-notes.md" -Value $releaseNotes -Encoding UTF8
+        Write-Host "✅ Release notes generated"
+        
+    - name: Upload Release Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-artifacts-${{ needs.validate-release.outputs.version }}
+        path: |
+          ./release/*.zip
+          ./release/*.sha256
+          ./release-notes.md
+        retention-days: 90
+
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [validate-release, build-artifacts]
+    environment: 
+      name: production
+      url: ${{ steps.create-release.outputs.html_url }}
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: Download Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: release-artifacts-${{ needs.validate-release.outputs.version }}
+        path: ./artifacts
+        
+    - name: Create GitHub Release
+      id: create-release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ needs.validate-release.outputs.tag }}
+        release_name: PowerShell Module ${{ needs.validate-release.outputs.version }}
+        body_path: ./artifacts/release-notes.md
+        draft: false
+        prerelease: ${{ needs.validate-release.outputs.is-prerelease }}
+        
+    - name: Upload Release Assets
+      shell: pwsh
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        Write-Host "📎 Uploading release assets..."
+        
+        $releaseId = "${{ steps.create-release.outputs.id }}"
+        $version = "${{ needs.validate-release.outputs.version }}"
+        
+        # Upload ZIP package
+        $zipFile = Get-ChildItem -Path "./artifacts" -Filter "*.zip" | Select-Object -First 1
+        if ($zipFile) {
+          Write-Host "Uploading: $($zipFile.Name)"
+          
+          $headers = @{
+            'Authorization' = 'token ${{ secrets.GITHUB_TOKEN }}'
+            'Content-Type' = 'application/zip'
+          }
+          
+          $uploadUrl = "https://uploads.github.com/repos/${{ github.repository }}/releases/$releaseId/assets?name=$($zipFile.Name)"
+          
+          try {
+            Invoke-RestMethod -Uri $uploadUrl -Method Post -Headers $headers -InFile $zipFile.FullName
+            Write-Host "✅ ZIP package uploaded successfully"
+          } catch {
+            Write-Error "Failed to upload ZIP package: $_"
+          }
+        }
+        
+        # Upload checksum
+        $checksumFile = Get-ChildItem -Path "./artifacts" -Filter "*.sha256" | Select-Object -First 1
+        if ($checksumFile) {
+          Write-Host "Uploading: $($checksumFile.Name)"
+          
+          $headers = @{
+            'Authorization' = 'token ${{ secrets.GITHUB_TOKEN }}'
+            'Content-Type' = 'text/plain'
+          }
+          
+          $uploadUrl = "https://uploads.github.com/repos/${{ github.repository }}/releases/$releaseId/assets?name=$($checksumFile.Name)"
+          
+          try {
+            Invoke-RestMethod -Uri $uploadUrl -Method Post -Headers $headers -InFile $checksumFile.FullName
+            Write-Host "✅ Checksum uploaded successfully"
+          } catch {
+            Write-Error "Failed to upload checksum: $_"
+          }
+        }
+
+  publish-gallery:
+    name: Publish to PowerShell Gallery
+    runs-on: ubuntu-latest
+    needs: [validate-release, build-artifacts, publish-release]
+    environment: production
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(needs.validate-release.outputs.version, '-')
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: Setup PowerShell
+      shell: pwsh
+      run: |
+        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+        
+    - name: Publish to PowerShell Gallery
+      shell: pwsh
+      env:
+        NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+      run: |
+        if ([string]::IsNullOrEmpty($env:NUGET_API_KEY)) {
+          Write-Warning "NUGET_API_KEY not found - skipping PowerShell Gallery publish"
+          exit 0
+        }
+        
+        Write-Host "📤 Publishing to PowerShell Gallery..."
+        
+        try {
+          Publish-Module -Path "." -NuGetApiKey $env:NUGET_API_KEY -Verbose
+          Write-Host "✅ Successfully published to PowerShell Gallery"
+        } catch {
+          Write-Error "Failed to publish to PowerShell Gallery: $_"
+          exit 1
+        }
+
+  notify-completion:
+    name: Notify Release Completion
+    runs-on: ubuntu-latest
+    needs: [validate-release, build-artifacts, publish-release]
+    if: always()
+    
+    steps:
+    - name: Release Summary
+      shell: pwsh
+      run: |
+        Write-Host "🎉 Release Pipeline Summary" -ForegroundColor Cyan
+        Write-Host "Version: ${{ needs.validate-release.outputs.version }}"
+        Write-Host "Tag: ${{ needs.validate-release.outputs.tag }}"
+        Write-Host "Prerelease: ${{ needs.validate-release.outputs.is-prerelease }}"
+        
+        $buildStatus = "${{ needs.build-artifacts.result }}"
+        $releaseStatus = "${{ needs.publish-release.result }}"
+        
+        Write-Host "Build Status: $buildStatus"
+        Write-Host "Release Status: $releaseStatus"
+        
+        if ($buildStatus -eq "success" -and $releaseStatus -eq "success") {
+          Write-Host "✅ Release completed successfully!" -ForegroundColor Green
+        } else {
+          Write-Host "❌ Release pipeline had issues" -ForegroundColor Red
+        }

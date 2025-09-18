@@ -1,0 +1,339 @@
+name: Code Quality
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run weekly on Sundays at 2 AM UTC
+    - cron: "0 2 * * 0"
+
+env:
+  POWERSHELL_TELEMETRY_OPTOUT: 1
+
+jobs:
+  code-quality:
+    name: Code Quality Analysis
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install PowerShell Modules
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+
+          $modules = @(
+            @{ Name = 'PSScriptAnalyzer'; MinimumVersion = '1.21.0' }
+            @{ Name = 'Pester'; MinimumVersion = '5.7.1' }
+            @{ Name = 'platyPS'; MinimumVersion = '0.14.2' }
+          )
+
+          foreach ($module in $modules) {
+            try {
+              Install-Module @module -Force -Scope CurrentUser -AllowClobber
+              Import-Module $module.Name -Force
+              Write-Host "✅ Installed $($module.Name)"
+            }
+            catch {
+              Write-Error "❌ Failed to install $($module.Name): $_"
+              exit 1
+            }
+          }
+
+      - name: Run Comprehensive PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Write-Host "🔍 Running comprehensive PSScriptAnalyzer scan..." -ForegroundColor Cyan
+
+          $results = @()
+          $sourceFiles = Get-ChildItem -Path .\src -Filter *.ps1 -Recurse -ErrorAction SilentlyContinue
+          $testFiles = Get-ChildItem -Path .\tests -Filter *.ps1 -Recurse -ErrorAction SilentlyContinue
+          $allFiles = $sourceFiles + $testFiles
+
+          if (-not $allFiles) {
+            Write-Warning "No PowerShell files found to analyze"
+            return
+          }
+
+          foreach ($file in $allFiles) {
+            Write-Host "Analyzing: $($file.FullName)"
+            $analysis = Invoke-ScriptAnalyzer -Path $file.FullName -Severity @('Error', 'Warning', 'Information') -Recurse
+            if ($analysis) {
+              $results += $analysis
+            }
+          }
+
+          if ($results) {
+            # Group results by severity
+            $errorCount = ($results | Where-Object Severity -eq 'Error').Count
+            $warningCount = ($results | Where-Object Severity -eq 'Warning').Count
+            $infoCount = ($results | Where-Object Severity -eq 'Information').Count
+            
+            Write-Host "`n📊 PSScriptAnalyzer Results:" -ForegroundColor Cyan
+            Write-Host "  Errors: $errorCount" -ForegroundColor Red
+            Write-Host "  Warnings: $warningCount" -ForegroundColor Yellow
+            Write-Host "  Information: $infoCount" -ForegroundColor Blue
+            
+            # Create detailed report
+            $results | Sort-Object ScriptPath, Line | Format-Table -AutoSize
+            
+            # Create GitHub annotations
+            foreach ($result in $results) {
+              $level = switch ($result.Severity) {
+                'Error' { 'error' }
+                'Warning' { 'warning' }
+                default { 'notice' }
+              }
+              $relativePath = $result.ScriptPath -replace [regex]::Escape($PWD), '.'
+              Write-Host "::$level file=$relativePath,line=$($result.Line),col=$($result.Column)::$($result.RuleName): $($result.Message)"
+            }
+            
+            # Save results to file for artifact
+            $results | ConvertTo-Json -Depth 10 | Out-File -FilePath 'pssa-results.json' -Encoding UTF8
+            
+            if ($errorCount -gt 0) {
+              Write-Host "❌ PSScriptAnalyzer found $errorCount errors" -ForegroundColor Red
+              exit 1
+            } elseif ($warningCount -gt 0) {
+              Write-Host "⚠️ PSScriptAnalyzer found $warningCount warnings" -ForegroundColor Yellow
+              # Don't fail on warnings in code quality check, just report them
+            }
+          } else {
+            Write-Host "✅ PSScriptAnalyzer found no issues" -ForegroundColor Green
+          }
+
+      - name: Validate Module Manifest
+        shell: pwsh
+        run: |
+          Write-Host "📋 Validating module manifest..." -ForegroundColor Cyan
+
+          $manifestPath = ".\PowerShellModule.psd1"
+
+          if (-not (Test-Path $manifestPath)) {
+            Write-Warning "Module manifest not found at $manifestPath"
+            return
+          }
+
+          try {
+            $manifest = Test-ModuleManifest -Path $manifestPath -ErrorAction Stop
+            
+            Write-Host "✅ Module manifest is valid" -ForegroundColor Green
+            Write-Host "  Name: $($manifest.Name)"
+            Write-Host "  Version: $($manifest.Version)"
+            Write-Host "  Author: $($manifest.Author)"
+            Write-Host "  PowerShell Version: $($manifest.PowerShellVersion)"
+            Write-Host "  Exported Functions: $($manifest.ExportedFunctions.Count)"
+            
+            # Validate required fields
+            $requiredFields = @('Author', 'Description', 'ModuleVersion')
+            foreach ($field in $requiredFields) {
+              if (-not $manifest.$field) {
+                Write-Warning "Missing required field: $field"
+              }
+            }
+            
+            # Check for exported functions
+            if ($manifest.ExportedFunctions.Count -eq 0) {
+              Write-Warning "No functions are exported by the module"
+            }
+            
+          }
+          catch {
+            Write-Host "❌ Module manifest validation failed: $_" -ForegroundColor Red
+            exit 1
+          }
+
+      - name: Test Module Import and Basic Functionality
+        shell: pwsh
+        run: |
+          Write-Host "🚀 Testing module import and functionality..." -ForegroundColor Cyan
+
+          try {
+            # Import module
+            Import-Module .\PowerShellModule.psd1 -Force -ErrorAction Stop
+            $functions = Get-Command -Module PowerShellModule
+            
+            Write-Host "✅ Module imported successfully" -ForegroundColor Green
+            Write-Host "Exported functions: $($functions.Name -join ', ')"
+            
+            # Test each function has help
+            $helpIssues = @()
+            foreach ($function in $functions) {
+              $help = Get-Help $function.Name
+              
+              if (-not $help.Synopsis -or $help.Synopsis -eq $function.Name) {
+                $helpIssues += "$($function.Name): Missing or default synopsis"
+              }
+              
+              if (-not $help.Description) {
+                $helpIssues += "$($function.Name): Missing description"
+              }
+              
+              if (-not $help.Examples) {
+                $helpIssues += "$($function.Name): Missing examples"
+              }
+              
+              # Test basic parameter validation
+              try {
+                $parameters = $function.Parameters
+                if ($parameters.Count -eq 0) {
+                  $helpIssues += "$($function.Name): No parameters defined"
+                }
+              }
+              catch {
+                $helpIssues += "$($function.Name): Error accessing parameters: $_"
+              }
+            }
+            
+            if ($helpIssues) {
+              Write-Host "⚠️ Help content issues found:" -ForegroundColor Yellow
+              $helpIssues | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+            } else {
+              Write-Host "✅ All functions have proper help content" -ForegroundColor Green
+            }
+            
+            # Basic functionality tests
+            try {
+              $testResult1 = ConvertTo-UpperCase -InputString "test"
+              if ($testResult1 -ne "TEST") {
+                throw "ConvertTo-UpperCase failed basic test"
+              }
+              
+              $testResult2 = Get-EmailAddress -EmailAddress "test@example.com"
+              if ($testResult2 -ne "test@example.com") {
+                throw "Get-EmailAddress failed basic test"
+              }
+              
+              $testResult3 = Get-DemoComputers -Count 1
+              if (-not $testResult3 -or $testResult3.Count -ne 1) {
+                throw "Get-DemoComputers failed basic test"
+              }
+              
+              Write-Host "✅ Basic functionality tests passed" -ForegroundColor Green
+            }
+            catch {
+              Write-Host "❌ Basic functionality test failed: $_" -ForegroundColor Red
+              exit 1
+            }
+            
+          }
+          catch {
+            Write-Host "❌ Module import failed: $_" -ForegroundColor Red
+            exit 1
+          }
+
+      - name: Generate Documentation
+        shell: pwsh
+        run: |
+          Write-Host "📚 Generating documentation..." -ForegroundColor Cyan
+
+          try {
+            Import-Module .\PowerShellModule.psd1 -Force
+            
+            # Create docs directory if it doesn't exist
+            if (-not (Test-Path .\docs)) {
+              New-Item -Path .\docs -ItemType Directory -Force
+            }
+            
+            # Generate markdown help for each function
+            $functions = Get-Command -Module PowerShellModule
+            foreach ($function in $functions) {
+              try {
+                $markdownHelp = New-MarkdownHelp -Command $function.Name -OutputFolder .\docs -Force
+                Write-Host "Generated documentation for: $($function.Name)"
+              }
+              catch {
+                Write-Warning "Failed to generate documentation for $($function.Name): $_"
+              }
+            }
+            
+            # Generate module documentation
+            try {
+              New-MarkdownHelp -Module PowerShellModule -OutputFolder .\docs -WithModulePage -Force
+              Write-Host "✅ Documentation generated successfully" -ForegroundColor Green
+            }
+            catch {
+              Write-Warning "Failed to generate module documentation: $_"
+            }
+            
+          }
+          catch {
+            Write-Host "❌ Documentation generation failed: $_" -ForegroundColor Red
+            # Don't fail the build for documentation issues
+          }
+
+      - name: Run Code Complexity Analysis
+        shell: pwsh
+        run: |
+          Write-Host "🔬 Running code complexity analysis..." -ForegroundColor Cyan
+
+          $sourceFiles = Get-ChildItem -Path .\src -Filter *.ps1 -Recurse -ErrorAction SilentlyContinue
+
+          if (-not $sourceFiles) {
+            Write-Warning "No source files found for complexity analysis"
+            return
+          }
+
+          $complexityResults = @()
+
+          foreach ($file in $sourceFiles) {
+            try {
+              $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+              $functions = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
+              
+              foreach ($func in $functions) {
+                $complexity = 1  # Base complexity
+                
+                # Count decision points (if, while, for, foreach, switch, etc.)
+                $decisionPoints = $func.FindAll({
+                  $args[0] -is [System.Management.Automation.Language.IfStatementAst] -or
+                  $args[0] -is [System.Management.Automation.Language.WhileStatementAst] -or
+                  $args[0] -is [System.Management.Automation.Language.ForStatementAst] -or
+                  $args[0] -is [System.Management.Automation.Language.ForEachStatementAst] -or
+                  $args[0] -is [System.Management.Automation.Language.SwitchStatementAst] -or
+                  $args[0] -is [System.Management.Automation.Language.TryStatementAst]
+                }, $true)
+                
+                $complexity += $decisionPoints.Count
+                
+                $complexityResults += [PSCustomObject]@{
+                  File = $file.Name
+                  Function = $func.Name
+                  Complexity = $complexity
+                  Lines = $func.Extent.EndLineNumber - $func.Extent.StartLineNumber + 1
+                }
+              }
+            }
+            catch {
+              Write-Warning "Failed to analyze complexity for $($file.Name): $_"
+            }
+          }
+
+          if ($complexityResults) {
+            Write-Host "`n📊 Complexity Analysis Results:" -ForegroundColor Cyan
+            $complexityResults | Sort-Object Complexity -Descending | Format-Table -AutoSize
+            
+            $highComplexity = $complexityResults | Where-Object Complexity -gt 10
+            if ($highComplexity) {
+              Write-Host "⚠️ Functions with high complexity (>10):" -ForegroundColor Yellow
+              $highComplexity | ForEach-Object {
+                Write-Host "  $($_.Function) in $($_.File): Complexity $($_.Complexity)" -ForegroundColor Yellow
+              }
+            } else {
+              Write-Host "✅ All functions have acceptable complexity" -ForegroundColor Green
+            }
+          }
+
+      - name: Upload Code Quality Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: code-quality-results
+          path: |
+            pssa-results.json
+            docs/
+          retention-days: 30

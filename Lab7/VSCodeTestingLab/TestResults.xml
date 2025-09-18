@@ -1,0 +1,67 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<test-results xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="nunit_schema_2.5.xsd" name="Pester" total="18" errors="0" failures="0" not-run="0" inconclusive="0" ignored="0" skipped="0" invalid="0" date="2025-09-17" time="13:22:54">
+  <environment clr-version="9.0.8" cwd="E:\OneDriveWorkProfile2\OneDrive\Powershell\scripts\Pester\Labs\Lab7\VSCodeTestingLab" platform="Microsoft Windows 11 Enterprise|C:\WINDOWS|\Device\Harddisk1\Partition3" user="jeffdyk" nunit-version="2.5.8.0" os-version="10.0.22631" user-domain="NORTHAMERICA" machine-name="JEFFPC2" />
+  <culture-info current-culture="en-US" current-uiculture="en-US" />
+  <test-suite type="TestFixture" name="Pester" executed="True" result="Success" success="True" time="0.7882" asserts="0" description="Pester">
+    <results>
+      <test-suite type="TestFixture" name="E:\OneDriveWorkProfile2\OneDrive\Powershell\scripts\Pester\Labs\Lab7\VSCodeTestingLab\tests\Calculator.Tests.ps1" executed="True" result="Success" success="True" time="0.6155" asserts="0" description="E:\OneDriveWorkProfile2\OneDrive\Powershell\scripts\Pester\Labs\Lab7\VSCodeTestingLab\tests\Calculator.Tests.ps1">
+        <results>
+          <test-suite type="TestFixture" name="Calculator Class Tests" executed="True" result="Success" success="True" time="0.2149" asserts="0" description="Calculator Class Tests">
+            <results>
+              <test-suite type="TestFixture" name="Calculator Class Tests.Basic Operations" executed="True" result="Success" success="True" time="0.1227" asserts="0" description="Calculator Class Tests.Basic Operations">
+                <results>
+                  <test-case description="Should add two numbers correctly" name="Calculator Class Tests.Basic Operations.Should add two numbers correctly" time="0.0755" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="Should subtract two numbers correctly" name="Calculator Class Tests.Basic Operations.Should subtract two numbers correctly" time="0.005" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="Should multiply two numbers correctly" name="Calculator Class Tests.Basic Operations.Should multiply two numbers correctly" time="0.0047" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="Should handle negative numbers" name="Calculator Class Tests.Basic Operations.Should handle negative numbers" time="0.0093" asserts="0" success="True" result="Success" executed="True" />
+                </results>
+              </test-suite>
+              <test-suite type="TestFixture" name="Calculator Class Tests.Division Operations" executed="True" result="Success" success="True" time="0.1765" asserts="0" description="Calculator Class Tests.Division Operations">
+                <results>
+                  <test-case description="Should divide two numbers correctly" name="Calculator Class Tests.Division Operations.Should divide two numbers correctly" time="0.0168" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="Should handle decimal division" name="Calculator Class Tests.Division Operations.Should handle decimal division" time="0.0047" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="Should throw error when dividing by zero" name="Calculator Class Tests.Division Operations.Should throw error when dividing by zero" time="0.0235" asserts="0" success="True" result="Success" executed="True" />
+                </results>
+              </test-suite>
+              <test-suite type="TestFixture" name="Calculator Class Tests.Advanced Operations" executed="True" result="Success" success="True" time="0.2008" asserts="0" description="Calculator Class Tests.Advanced Operations">
+                <results>
+                  <test-case description="Should calculate power correctly" name="Calculator Class Tests.Advanced Operations.Should calculate power correctly" time="0.0096" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="Should handle fractional exponents" name="Calculator Class Tests.Advanced Operations.Should handle fractional exponents" time="0.0053" asserts="0" success="True" result="Success" executed="True" />
+                </results>
+              </test-suite>
+            </results>
+          </test-suite>
+        </results>
+      </test-suite>
+      <test-suite type="TestFixture" name="E:\OneDriveWorkProfile2\OneDrive\Powershell\scripts\Pester\Labs\Lab7\VSCodeTestingLab\tests\StringUtils.Tests.ps1" executed="True" result="Success" success="True" time="0.1727" asserts="0" description="E:\OneDriveWorkProfile2\OneDrive\Powershell\scripts\Pester\Labs\Lab7\VSCodeTestingLab\tests\StringUtils.Tests.ps1">
+        <results>
+          <test-suite type="TestFixture" name="String Utilities Tests" executed="True" result="Success" success="True" time="0.0909" asserts="0" description="String Utilities Tests">
+            <results>
+              <test-suite type="TestFixture" name="String Utilities Tests.Email Validation" executed="True" result="Success" success="True" time="0.0226" asserts="0" description="String Utilities Tests.Email Validation">
+                <results>
+                  <test-case description="Should validate correct email addresses" name="String Utilities Tests.Email Validation.Should validate correct email addresses" time="0.0078" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="Should reject invalid email addresses" name="String Utilities Tests.Email Validation.Should reject invalid email addresses" time="0.0067" asserts="0" success="True" result="Success" executed="True" />
+                </results>
+              </test-suite>
+              <test-suite type="TestFixture" name="String Utilities Tests.Phone Number Formatting" executed="True" result="Success" success="True" time="0.051" asserts="0" description="String Utilities Tests.Phone Number Formatting">
+                <results>
+                  <test-case description="Should format 10-digit phone numbers" name="String Utilities Tests.Phone Number Formatting.Should format 10-digit phone numbers" time="0.0063" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="Should format 11-digit phone numbers with country code" name="String Utilities Tests.Phone Number Formatting.Should format 11-digit phone numbers with country code" time="0.0041" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="Should handle phone numbers with existing formatting" name="String Utilities Tests.Phone Number Formatting.Should handle phone numbers with existing formatting" time="0.0031" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="Should throw error for invalid phone numbers" name="String Utilities Tests.Phone Number Formatting.Should throw error for invalid phone numbers" time="0.0061" asserts="0" success="True" result="Success" executed="True" />
+                </results>
+              </test-suite>
+              <test-suite type="TestFixture" name="String Utilities Tests.Initials Generation" executed="True" result="Success" success="True" time="0.0824" asserts="0" description="String Utilities Tests.Initials Generation">
+                <results>
+                  <test-case description="Should generate initials from full name" name="String Utilities Tests.Initials Generation.Should generate initials from full name" time="0.0094" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="Should handle edge cases" name="String Utilities Tests.Initials Generation.Should handle edge cases" time="0.005" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="Should handle multiple spaces" name="String Utilities Tests.Initials Generation.Should handle multiple spaces" time="0.0084" asserts="0" success="True" result="Success" executed="True" />
+                </results>
+              </test-suite>
+            </results>
+          </test-suite>
+        </results>
+      </test-suite>
+    </results>
+  </test-suite>
+</test-results>
